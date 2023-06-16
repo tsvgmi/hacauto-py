@@ -5,6 +5,8 @@ import glob
 import os
 import logging
 import tabulate
+import sys
+import re
 
 from smule_song import SmuleSong, DbConn
 
@@ -178,9 +180,30 @@ def to_open(obj, user, filters, **kwargs):
   print(tabulate.tabulate(query.all(),
               headers=['Title', 'Date', 'Author', 'Perf', 'Tags']))
 
+@cli.command()
+@click.option('--table', is_flag=True, help='Generate MD table')
+@click.pass_obj
+def clean_lyrics(obj, **kwargs):
+  """Clean lyrics from lyric site to put into docs"""
+
+  # Have to wait for reading all before starting to output
+  buffer = [l for l in sys.stdin]
+
+  # Some separation of output to input stream
+  print("\n".join(['==========']*3))
+  out_table = kwargs['table']
+  if out_table:
+    print('| | Lyrics |')
+    print('|-| ------ |')
+  for l in buffer:
+    l = re.sub('\[[^\]]+\]', '', l.rstrip())
+    if out_table:
+      l = f"| | {l.strip()} |"
+    print(l)
+
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG,
-            format='%(levelname)3.3s %(asctime)s %(module)s:%(lineno)03d %(message)s',
-            datefmt='%m/%d/%Y %H:%M:%S')
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-    cli()
+  logging.basicConfig(level=logging.DEBUG,
+          format='%(levelname)3.3s %(asctime)s %(module)s:%(lineno)03d %(message)s',
+          datefmt='%m/%d/%Y %H:%M:%S')
+  logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+  cli()
