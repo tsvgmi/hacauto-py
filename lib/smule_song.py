@@ -1,32 +1,18 @@
+#!/bin/env python
+
 import datetime as DT
-import json as JS
 import logging
 import os
-import requests
 import subprocess as SP
 import tempfile as TF
+import re
+import click
+import time
+import yaml
 
-from bs4 import BeautifulSoup
+from core import get_page_curl
 
 _logger = logging.getLogger(__name__)
-
-def get_parsed_page(url, ofile=None, json=False, raw=False):
-  headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:59.0) Gecko/20100101 Firefox/59.0"
-  }
-  _logger.debug('Request from %s', url)
-  resp = requests.get(url, headers=headers)
-  if ofile:
-    with open(ofile, 'wb') as f:
-      f.write(resp.content)
-    _logger.debug('Written to %s', ofile)
-    return
-
-  if json:
-    return JS.loads(resp.content)
-  if raw:
-    return resp.content
-  return BeautifulSoup(resp.content, 'html.parser')
 
 class SmuleSong:
   def __init__(self, sinfo):
@@ -38,18 +24,21 @@ class SmuleSong:
       self.info.created = DT.datetime.now()
 
   def update_mp4tag(self):
-    if os.path.isfile(self.location):
-      href    = f"https://www.smule.com{self.info.href}"
-      date    = self.info.created.strftime('%Y-%m-%d')
-      album   = self.info.created.strftime('Smule-%Y.%m')
-      artist  = self.info.record_by.replace(',', ', ')
-      release = self.info.created.isoformat()
-      comment = f"{date} - {href}"
-      title   = self.info.title
+    if not os.path.isfile(self.location):
+      _logger.error(f"File {self.location} does not exist")
+      return
+
+    href    = f"https://www.smule.com{self.info.href}"
+    date    = self.info.created.strftime('%Y-%m-%d')
+    album   = self.info.created.strftime('Smule-%Y.%m')
+    artist  = self.info.record_by.replace(',', ', ')
+    release = self.info.created.isoformat()
+    comment = f"{date} - {href}"
+    title   = self.info.title
 
     command = f"atomicparsley {self.location}"
     lcfile  = 'logs/' + os.path.basename(self.info.avatar)
-    get_parsed_page(self.info.avatar, ofile=lcfile)
+    get_page_curl(self.info.avatar, ofile=lcfile)
 
     if os.path.isfile(lcfile) and \
       SP.run(f"file {lcfile}", capture_output=True, shell=True) \
@@ -76,12 +65,28 @@ class SmuleSong:
         _logger.info('No change in data')
         return False
     self.info.record_by = new_record
-    _logger.info(f"Changing {cur_record} to {new_record}")
+    _logger.debug(f"Changing {cur_record} to {new_record}")
     return True
 
   song_dir = "/mnt/d/SMULE"
 
-  # Class methods
+  # Account to move songs to.  i.e. user close old account and open
+  # new one and we want to associate with new account
+  # Or user have multiple accounts, but we want to collapse to one
+  ALTERNATE = None
+
+  def record_by_map(record_by):
+    result = []
+
+    if ALTERNATE is None:
+      with open('etc/alias.yml') as fid:
+        ALTERNATE = yaml.safe_load(fid)
+
+    for ri in record_by:
+      result.append(SmuleSong.ALTERNATE[ri] \
+          if ri in SmuleSong.ALTERNATE else ri)
+    return result
+    
   def stored_location(sid):
     newdir   = ''.join([f[0:2] for f in sid.split('_')])
     location = SmuleSong.song_dir + '/STORE/' + f"{newdir}/{sid}.m4a"
@@ -99,24 +104,122 @@ class SmuleSong:
 ######################################################################
 from smule_model import *
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, select, exists, MetaData
 from sqlalchemy.orm import Session
 
-class DbConn:
-  def __init__(self, obj):
-    self.obj     = obj
-    data_dir     = obj['data_dir']
-    conn_str     = f"sqlite:///{data_dir}/smule.db"
-    self.engine  = create_engine(conn_str)
+class SmuleDB:
+  def __init__(self, user, data_dir):
+    self.user    = user
+    self.engine  = create_engine(f"sqlite:///{data_dir}/smule.db")
     self.conn    = self.engine.connect()
     self.session = Session(self.engine)
+    self.tables  = {}
 
-  def select(self, query):
-    return self.conn.execute(text(query))
+  def top_partners(self, limit, exclude=None, days=90):
+    odate   = (DT.datetime.now() - DT.timedelta(days=days)).strftime('%Y-%m-%d')
+    if exclude:
+      exclude = exclude.split(',')
+      filter = [f"record_by not like '%{u}%'" for u in exclude]
+      filter = " and ".join(filter)
+      filter = f"and ({filter})"
+    else:
+      filter = ''
+    query = f"""
+      select record_by, count(*) as count, sum(loves) as loves,
+        sum(listens) as listens, sum(stars) as stars,
+        sum(isfav)+sum(oldfav) as favs
+      from performances where record_by != '{self.user}' and
+        created > '{odate}' {filter}
+      group by record_by order by listens desc
+      """
+    _logger.info(query)
 
-  def execute(self, stmt):
-    return self.session.execute(stmt)
+    rank   = {}
+    filter = f",?{self.user},?"
+    for r in self.conn.execute(query):
+      key = re.sub(filter, '', r['record_by'])
+      if key not in rank:
+        rank[key] = {'count': 0, 'loves': 0, 'listens': 0,
+                     'favs': 0, 'stars': 0}
+      rank[key]['count']   += r['count']
+      rank[key]['loves']   += r['loves']
+      rank[key]['listens'] += r['listens']
+      rank[key]['stars']   += r['stars']
+      if r['favs']:
+        rank[key]['favs']    += r['favs']
+    
+    for _singer, sinfo in rank.items():
+      score = sinfo['count'] + sinfo['favs']*10 + sinfo['loves']*0.2 + \
+              sinfo['listens']/20.0 + sinfo['stars']*0.1
+      sinfo['score'] = score
+    
+    srank        = sorted(rank.items(), key=lambda x:x[1]['score'], reverse=True)
+    top_partners = [item[0] for item in srank[0:limit]]
+    _logger.info(" ".join(top_partners))
+    return top_partners
 
-  def commit(self):
-    return self.session.commit()
+  def add_favorites(self, block):
+    query = 'update performances set oldfav=1 where isfav=1'
+    self.conn.execute(query)
+
+    query = 'update performances set isfav = NULL'
+    self.conn.execute(query)
+
+    sids = [repr(r['sid']) for r in block]
+    query = 'update performances set isfav=1 where sid in (' + \
+            ','.join(sids) + ')'
+    self.conn.execute(query)
+
+  def add_new_songs(self, block, isfav = True):
+    now = DT.datetime.now()
+
+    # Favlist must be reset if specified
+    if isfav:
+      sql = f"update performances set isfav = NULL where isfav=1"
+      self.conn.execute(sql)
+
+    newsets, updsets = [], []
+
+    for r in block:
+      r['updated_at'] = now
+      if isfav:
+        r['isfav'] = 1
+      r.pop('lyrics',   None)
+      r.pop('pic_urls', None)
+      r.pop('accounts', None)
+      
+      rec = self.session.query(Performance) \
+        .where(Performance.sid==r['sid']).first()
+
+      if rec:
+        updset = {
+          'listens':   r['listens'],
+          'loves':     r['loves'],
+          'record_by': r['record_by'], # In case user change login
+          'isfav':     r['isfav'],
+          'avatar':    r['avatar'],
+          'message':   r['message'],
+        }
+        for cfield in ['orig_city', 'latlong', 'latlong_2']:
+          if cfield in r:
+            updset[cfield] = r[cfield]
+
+        if 'parent_sid' in r and r['parent_sid'] != 'ensembles':
+          updset['parent_sid'] = r['parent_sid']
+        if updset['isfav']:
+          updset['oldfav'] = updset['isfav']
+        rec.update(updset)
+        rec.save
+        updsets.append(r)
+      else:
+        #begin
+        Performance.insert(r)
+        newsets.append(r)
+        #rescue StandardError => e
+          #p e
+        #end
+      
+    return [newsets, updsets]
+  
+    pass
 

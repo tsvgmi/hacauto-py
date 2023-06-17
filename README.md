@@ -7,4 +7,5 @@ Learning Python by converting a usefull project
 * sqlalchemy
 * conda
 * requests
-* pdb
+* pdb, pdbpp
+* visualstudio code

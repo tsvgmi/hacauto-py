@@ -48,12 +48,10 @@ class Performance(Base):
     other_city = Column(String(255), server_default=text("NULL"))
     message = Column(String(255))
     deleted = Column(Boolean)
-    expire_at = Column(DateTime)
     latlong = Column(String(255))
     latlong_2 = Column(String(255))
     record_by_ids = Column(String(255))
     parent_sid = Column(String(255), index=True)
-    perf_tags = Column(String(255))
     song_info_id = Column(Integer)
 
 
