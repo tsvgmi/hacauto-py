@@ -8,7 +8,7 @@ import tabulate
 import sys
 import re
 
-from smule_song import SmuleSong, DbConn
+from smule_song import SmuleSong, DbConn, SmuleDB, Api
 
 @click.group()
 @click.option('--browser',   type=click.Choice(['firefox', 'chromes']),
@@ -29,8 +29,26 @@ def cli(ctx, **kwargs):
 
 @cli.command()
 @click.pass_obj
+def fix_db_date(obj):
+  """Fix DB data that was in date only format"""
+
+  db  = DbConn('data/smule.db').conn
+  res = db.execute('select id,created,updated_at from performances')
+  for rec in res.all():
+    changes = []
+    if len(rec[1]) == 10:
+      changes.append(f"created = '{rec[1]} 00:00:00.000000'")
+    if rec[2] and len(rec[2]) == 10:
+      changes.append(f"updated_at = '{rec[2]} 00:00:00.000000'")
+    if len(changes) > 0:
+      changes = ", ".join(changes)
+      sql = f"update performances set {changes} where id={rec[0]}"
+      db.execute(sql)
+
+@cli.command()
 @click.argument('user')
-def check_media_missing(obj, user):
+@click.pass_obj
+def fix_media_missing(obj, user):
   """Check if any media (m4u) files are missing (reference is db)
 
   USER: the main recorded user
@@ -51,7 +69,7 @@ def check_media_missing(obj, user):
 
 @cli.command()
 @click.pass_obj
-def check_media_error(obj, **kwargs):
+def fix_media_error(obj, **kwargs):
   """Check if any media (m4u) files have error (using ffmpeg)"""
 
   ccount   = 0
@@ -72,7 +90,7 @@ from smule_model import *
 @click.pass_obj
 @click.argument('user')
 @click.argument('filter')
-def tag_mp3(obj, user, filter):
+def fix_mp3_tags(obj, user, filter):
   """Retag of selected songs"""
 
   db_conn = DbConn(obj)
@@ -201,8 +219,16 @@ def clean_lyrics(obj, **kwargs):
       l = f"| | {l.strip()} |"
     print(l)
 
+@cli.command()
+@click.argument('user')
+@click.pass_obj
+def scan_favs(obj, user):
+  """Scan list of favorites for USER"""
+  favset  = Api.get_favs(user)
+  SmuleDB(user, data_dir="./data").add_favorites(favset)
+
 if __name__ == '__main__':
-  logging.basicConfig(level=logging.DEBUG,
+  logging.basicConfig(level=logging.INFO,
           format='%(levelname)3.3s %(asctime)s %(module)s:%(lineno)03d %(message)s',
           datefmt='%m/%d/%Y %H:%M:%S')
   logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
