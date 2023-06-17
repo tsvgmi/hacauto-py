@@ -8,7 +8,9 @@ import tabulate
 import sys
 import re
 
-from smule_song import SmuleSong, DbConn, SmuleDB, Api
+from smule_song import SmuleSong, DbConn, SmuleDB
+from api        import Api
+from scanner    import Scanner
 
 @click.group()
 @click.option('--browser',   type=click.Choice(['firefox', 'chromes']),
@@ -22,9 +24,9 @@ from smule_song import SmuleSong, DbConn, SmuleDB, Api
 @click.option('--song-dir',  default='/mnt/d/SMULE',
         help='Directory to save music files')
 @click.pass_context
-def cli(ctx, **kwargs):
+def cli(ctx, **options):
   ctx.ensure_object(dict)
-  for key, value in kwargs.items():
+  for key, value in options.items():
     ctx.obj[key] = value
 
 @cli.command()
@@ -69,7 +71,7 @@ def fix_media_missing(obj, user):
 
 @cli.command()
 @click.pass_obj
-def fix_media_error(obj, **kwargs):
+def fix_media_error(obj, **options):
   """Check if any media (m4u) files have error (using ffmpeg)"""
 
   ccount   = 0
@@ -108,11 +110,11 @@ def fix_mp3_tags(obj, user, filter):
 @click.argument('filters', nargs=-1)
 @click.option('-c', '--with-collabs', is_flag=True, help='Collect my joiners')
 @click.pass_obj
-def collect_songs(obj, user, filters, **kwargs):
+def collect_songs(obj, user, filters, **options):
   """Collect songs joined by USER"""
   print('user:', user)
   print('filters:', filters)
-  for key, value in kwargs.items():
+  for key, value in options.items():
     print('K', key, ':', value)
   for key, value in obj.items():
     print('C', key, ':', value)
@@ -123,13 +125,13 @@ def collect_songs(obj, user, filters, **kwargs):
 @click.argument('new_name')
 @click.option('--audit', is_flag=True, help='Audit change only')
 @click.pass_obj
-def move_singer(obj, user, old_name, new_name, **kwargs):
+def move_singer(obj, user, old_name, new_name, **options):
   """Rename a singer from old name to new name.
 
   Singer often changes display name.  This is tracked in DB, so we need to run
   this operation to rename all in song resources (db and mp4 tags)
   """
-  if kwargs['audit']:
+  if options['audit']:
     name_chk = new_name
   else:
     name_chk = old_name
@@ -140,7 +142,7 @@ def move_singer(obj, user, old_name, new_name, **kwargs):
   print(stmt)
   db_conn = DbConn(obj)
   result  = db_conn.execute(stmt)
-  isaudit = kwargs['audit']
+  isaudit = options['audit']
   with click.progressbar(result.all(), label='Rename singer') as bar:
     for row in bar:
         print(row)
@@ -157,7 +159,7 @@ def move_singer(obj, user, old_name, new_name, **kwargs):
 @click.option('--tags', default='', help='Tags to match')
 @click.option('--record', default='', help='Record to match')
 @click.pass_obj
-def to_open(obj, user, filters, **kwargs):
+def to_open(obj, user, filters, **options):
   """Show list of potential songs to open
   
   List the candidates for open from the matching filter.
@@ -189,7 +191,7 @@ def to_open(obj, user, filters, **kwargs):
               .where(Performance.stitle.in_(to_open)) \
               .group_by(Performance.stitle) \
               .order_by('created')
-  tags = kwargs['tags']
+  tags = options['tags']
   if tags:
     query = query.filter(or_(
         SongInfo.author.like(f'%{tags}%'),
@@ -201,7 +203,7 @@ def to_open(obj, user, filters, **kwargs):
 @cli.command()
 @click.option('--table', is_flag=True, help='Generate MD table')
 @click.pass_obj
-def clean_lyrics(obj, **kwargs):
+def clean_lyrics(obj, **options):
   """Clean lyrics from lyric site to put into docs"""
 
   # Have to wait for reading all before starting to output
@@ -209,7 +211,7 @@ def clean_lyrics(obj, **kwargs):
 
   # Some separation of output to input stream
   print("\n".join(['==========']*3))
-  out_table = kwargs['table']
+  out_table = options['table']
   if out_table:
     print('| | Lyrics |')
     print('|-| ------ |')
@@ -227,8 +229,46 @@ def scan_favs(obj, user):
   favset  = Api.get_favs(user)
   SmuleDB(user, data_dir="./data").add_favorites(favset)
 
+@cli.command()
+@click.pass_obj
+@click.argument('user')
+@click.argument('count', type=click.INT)
+@click.argument('singers', nargs=-1)
+@click.option('--top', default=20, help='Top n joiners')
+@click.option('--days', default=90, help='Look back n days only')
+@click.option('--exclude', default='', help='List of users to exclude')
+@click.option('--pause', default=5, help='Time to wait between songs')
+def like_singers(obj, user, count, singers, **options):
+  db                 = SmuleDB(user, data_dir="./data")
+  exclude            = options['exclude'].split(',')
+  options['exclude'] = exclude
+  topcount           = options['top'] + len(exclude)
+
+  days    = options['days']
+  singers = db.top_partners(topcount, days=days)
+  singers = list(set(singers) - set(exclude))
+
+  logging.debug(repr({"singers": singers}))
+  
+  allsets = []
+  for asinger in singers:
+    perfset = Api.get_performances(asinger, limit=count, days=days)
+    allsets += perfset
+  print(allsets)
+
+#  scanner = Scanner(user, options)
+#  starred = scanner.like_set(allsets, count)
+
+#  counters = {}
+#  for sinfo in allsets:
+#    for singer in sinfo[:record_by].split(','):
+#      counters[singer] = counters[singer]+1 if singer in counters else 0
+#    
+#  scounters = sorted(counters.items(), key=lambda x:x[1])
+#  print(scounters)
+
 if __name__ == '__main__':
-  logging.basicConfig(level=logging.INFO,
+  logging.basicConfig(level=logging.DEBUG,
           format='%(levelname)3.3s %(asctime)s %(module)s:%(lineno)03d %(message)s',
           datefmt='%m/%d/%Y %H:%M:%S')
   logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)

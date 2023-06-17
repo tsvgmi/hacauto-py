@@ -1,75 +1,15 @@
 import datetime as DT
-import json as JS
 import logging
 import os
-import requests
 import subprocess as SP
 import tempfile as TF
 import re
-import pytz
 import click
 import time
-import emoji
 
-from dateutil import parser
-
-from bs4 import BeautifulSoup
+from core import get_page_curl
 
 _logger = logging.getLogger(__name__)
-
-ACCENT_MAP = {
-  '[áàảãạâấầẩẫậăắằẳẵặ]': 'a',
-  '[ÁÀẢÃẠÂẤẦẨẪẬĂẮẰẲẴẶ]': 'A',
-  'đ': 'd',
-  'Đ': 'D',
-  '[éèẻẽẹêếềểễệ]': 'e',
-  '[ÉÈẺẼẸÊẾỀỂỄỆ]': 'E',
-  '[íìỉĩị]': 'i',
-  '[ÍÌỈĨỊ]': 'I',
-  '[óòỏõọôốồổỗộơớờởỡợ]': 'o',
-  '[ÓÒỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢ]': 'O',
-  '[úùủũụưứừửữự]': 'u',
-  '[ÚÙỦŨỤƯỨỪỬỮỰ]': 'U',
-  '[ýỳỷỹỵ]': 'y',
-  '[ÝỲỶỸỴ]': 'Y',
-}
-
-def clean_emoji(str):
-  return re.sub(':[^:]+:', '', emoji.demojize(str))
-
-def normalize_vnaccent(str):
-  for ptn, rep in ACCENT_MAP.items():
-    str = re.sub(ptn, rep, str)
-  return str
-
-def to_stitle(str):
-  str    = clean_emoji(str)
-  stitle = re.sub('\s+[-=(].*$', '', str).replace('"', '')
-  stitle = normalize_vnaccent(stitle)
-  stitle = re.sub('[^a-z0-9 ]', '', stitle.lower())
-  stitle = re.sub('\s+', ' ', stitle)
-  stitle.strip()
-
-def compact(list):
-  return [v for v in list if v]
-
-def get_page_curl(url, ofile=None, json=False, raw=False):
-  headers = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 6.1; Win64; x64; rv:59.0) Gecko/20100101 Firefox/59.0"
-  }
-  _logger.debug('Request from %s', url)
-  resp = requests.get(url, headers=headers)
-  if ofile:
-    with open(ofile, 'wb') as f:
-      f.write(resp.content)
-    _logger.debug('Written to %s', ofile)
-    return
-
-  if raw:
-    return resp.content
-  if json:
-    return JS.loads(resp.content)
-  return BeautifulSoup(resp.content, 'html.parser')
 
 class SmuleSong:
   def __init__(self, sinfo):
@@ -191,6 +131,42 @@ class SmuleDB(DbConn):
     self.content = self.session.query(Performance) \
         .where(text(f"record_by like '%{user}%'"))
 
+  def top_partners(self, limit, days=90):
+    odate = (DT.datetime.now() - DT.timedelta(days=days)).strftime('%Y-%m-%d')
+    query = f"""
+      select record_by, count(*) as count, sum(loves) as loves,
+        sum(listens) as listens, sum(stars) as stars,
+        sum(isfav)+sum(oldfav) as favs
+      from performances where record_by != '{self.user}' and
+        created > '{odate}'
+      group by record_by order by listens desc
+      """
+    _logger.debug(query)
+
+    rank   = {}
+    filter = f",?{self.user},?"
+    for r in self.conn.execute(query):
+      key = re.sub(filter, '', r['record_by'])
+      if key not in rank:
+        rank[key] = {'count': 0, 'loves': 0, 'listens': 0,
+                     'favs': 0, 'stars': 0}
+      rank[key]['count']   += r['count']
+      rank[key]['loves']   += r['loves']
+      rank[key]['listens'] += r['listens']
+      rank[key]['stars']   += r['stars']
+      if r['favs']:
+        rank[key]['favs']    += r['favs']
+    
+    for _singer, sinfo in rank.items():
+      score = sinfo['count'] + sinfo['favs']*10 + sinfo['loves']*0.2 + \
+              sinfo['listens']/20.0 + sinfo['stars']*0.1
+      sinfo['score'] = score
+    
+    srank        = sorted(rank.items(), key=lambda x:x[1]['score'], reverse=True)
+    top_partners = [item[0] for item in srank[0:limit]]
+    _logger.info(" ".join(top_partners))
+    return top_partners
+
   def add_favorites(self, block):
     query = 'update performances set oldfav=1 where isfav=1'
     self.conn.execute(query)
@@ -255,88 +231,4 @@ class SmuleDB(DbConn):
     return [newsets, updsets]
   
     pass
-
-class Api:
-  def _extract_info(info):
-    owner     = info['owner']
-    record_by = [owner['handle']]
-    for rinfo in info['other_performers']:
-      record_by.append(rinfo['handle'])
-
-    record_by_ids = [info['owner']['account_id']]
-    if info['duet']:
-        record_by_ids.append(info.get('duet', {})['account_id'])
-    record_by_ids = [str(v) for v in compact(record_by_ids)]
-    record_by_ids = ",".join(record_by_ids)
-
-    stats = info['stats']
-    return {
-      'sid':           info['key'],
-      'title':         info['title'],
-      'stitle':        to_stitle(info['title']),
-      'href':          info['web_url'],
-      'message':       info['message'],
-      'created':       parser.parse(info['created_at']),
-      'avatar':        info['cover_url'],
-      'listens':       stats['total_listens'],
-      'loves':         stats['total_loves'],
-      'gifts':         stats['total_gifts'],
-      'record_by':     ','.join(SmuleSong.record_by_map(record_by)),
-      'record_by_ids': record_by_ids,
-      'latlong':       f"{owner['price']},{owner['discount']}",
-    }
-
-  def get_favs(user):
-    _logger.info(f"Getting favorites for {user}")
-    result = Api.get_songs(f"https://www.smule.com/{user}/favorites/json",
-        limit=500, days=365*10)
-    _logger.info("Collecting %d favorites from user %s", len(result), user)
-    return result
-
-  def get_songs(url, limit=100, days=365):
-    allset    = []
-    offset    = 0
-    utc       = pytz.UTC
-    first_day = utc.localize(DT.datetime.now() - DT.timedelta(days=days))
-    _logger.debug(f"Collecting songs after {first_day}")
-
-    done   = False
-    with click.progressbar(length=limit, label='Get performances') as bar:
-      for value in bar:
-        ourl = f"{url}?order=created&offset={offset}"
-        _logger.debug(f"url: {ourl}")
-        if (output := get_page_curl(ourl, raw = True)) == 'Forbidden':
-          time.sleep(2)
-          next
-        
-        try:
-          result = JS.loads(output)
-        except JSONDecodeError:
-          _logger.error("JSON decode error. Ignore")
-          _logger.error(output)
-          next
-
-        slist  = result['list']
-        _logger.debug("Getting %d entries", len(slist))
-        for info in slist:
-          allset.append(Api._extract_info(info))
-          bar.update(1)
-          if parser.parse(info['created_at']) <= first_day:
-            logger.debug(f"Created less than {first_day}")
-            done = True
-            break
-          
-        else:
-          # Bug at smule?, it gives bad next offset, so I only use to
-          # check sentinel but use my own offset
-          if (sentinel := result['next_offset']) <= 0:
-            done = True
-            break
-          offset += len(slist)
-          continue
-        break
-      if done:
-        bar.finish()
-
-    return allset
 
