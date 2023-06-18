@@ -1,3 +1,4 @@
+import atexit
 import logging
 import time
 import re
@@ -11,20 +12,24 @@ class SDriver:
     self.url     = base_url
     _logger.debug(f"Goto {self.url} using {browser}")
     self.browser = webdriver.Firefox()
+    atexit.register(self.browser.quit)
     self.browser.get(self.url)
     time.sleep(1)
 
-  def close(self):
-    self.browser.quit()
+  def find_element(self, selector, index = 0):
+    elements = self.browser.find_elements(By.CSS_SELECTOR, selector)
+    if index < 0:
+      return elements
+
+    if len(elements) <= index:
+      _logger.error(f"Element {selector}[{index}] not found")
+      return False
+    return elements[index]
 
   def click(self, selector, wtime = 2, index = 0, move=False):
     _logger.debug(f"Click on {selector}[{index}]")
-    elements = self.browser.find_elements(By.CSS_SELECTOR, selector)
-    element = elements[index]
-    if not element:
-      _logger.error(f"Element {selector}[{index}] not found")
+    if not (element := self.find_element(selector, index=index)):
       return False
-    
     element.click()
     if wtime > 0:
       time.sleep(wtime)

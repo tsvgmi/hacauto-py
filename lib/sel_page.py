@@ -1,4 +1,6 @@
+import time
 from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
 
 # A simple class to combine the Slenium and and Nokogiri parsing
 # support.  selenim itself could do css parsing too but documentation
@@ -7,11 +9,21 @@ class SelPage:
 
   def __init__(self, sdriver):
     self.sdriver = sdriver
-    self.clicks  = 0
     self.refresh()
 
   def refresh(self):
     self.page = BeautifulSoup(self.sdriver.browser.page_source, 'html.parser')
+
+  def goto(self, link, wait=1):
+    self.sdriver.goto(link)
+    time.sleep(wait)
+    self.refresh()
+
+  def css(self, spec):
+    return self.page.css(spec)
+
+
+#
 #
 #  def find_and_click_links(lselector, rselector, options = {})
 #    links = @page.css(lselector).map { |asong| asong['href'] }
@@ -26,20 +38,9 @@ class SelPage:
 #    links.each do |link|
 #      goto(link)
 #      @sdriver.click_and_wait(rselector, 3)
-#      @clicks += 1
-#      break if @clicks >= limit
 #    end
 #  end
 #
-#  def goto(link, wait = 1)
-#    @sdriver.goto(link)
-#    sleep(wait)
-#    refresh
-#  end
-#
-#  def css(spec)
-#    @page.css(spec)
-#  end
 #
 #  def method_missing(method, *argv)
 #    @sdriver.send(method.to_s, *argv)

@@ -1,31 +1,162 @@
+import logging
+
 from sel_page import SelPage
+
+_logger = logging.getLogger(__name__)
+
+LOCATORS = {
+  'sc_auto_play_off':   'div.sc-dsQDmV.bWqwJs',
+  'sc_comment_close':   'div.sc-bSakgD.ccMbSJ',
+  'sc_comment_open':    'div.sc-gILORG.iQzmBv',
+  'sc_play_toggle':     'div.sc-bTmccw.fSDrYS svg path',
+  'sc_song_menu':       'button.sc-gpxMCN.cGCDHp',
+  'sc_heart':           'div.sc-gILORG.iQzmBv',
+
+  'sc_favorite_toggle': 'li.sc-iLIByi.rLGZk',
+  'sc_comment_text':    'div.sc-bPPhlf.bLuqb',
+  'sc_play_time':       'span.sc-kDDrLX.bnygEQ',
+  'sc_song_menu_text':  'span.sc-kDDrLX.XrXfW',
+  'sc_song_note':       'p.sc-iJkHyd.etjGnv',
+  'sc_oh_no':           'div.sc-gYMRRK.dJWJvi',
+
+  'sc_finit':           '.sc-tQuYZ.bnsezK',
+  'sc_followers':       '.sc-btIRyd.kdDvya',
+  'sc_followings':      '.sc-kDDrLX.bigqPT',
+  'sc_fentry':          'div.sc-knuRna.idgPUg',
+
+  'sc_notification':    'div.sc-dvwKko.fircjK a',
+}
 
 class SmulePage(SelPage):
   def __init__(self, driver):
     super().__init__(driver)
 
-#  LOCATORS = {
-#    sc_auto_play_off: 'div.sc-dsQDmV.bWqwJs',
-#    sc_comment_close: 'div.sc-bSakgD.ccMbSJ',
-#    sc_comment_open: 'div.sc-gILORG.iQzmBv',
-#    sc_play_toggle: 'div.sc-bTmccw.fSDrYS svg path',
-#    sc_song_menu: 'button.sc-gpxMCN.cGCDHp',
-#    sc_heart: 'div.sc-gILORG.iQzmBv',
+  def like_song(self, href = None):
+    if href:
+      self.goto(href, wait=3)
+
+    elem = LOCATORS['sc_heart']
+
+    fill = self.sdriver.find_element(f"{elem} svg path").get_attribute('fill')
+    if not fill:
+      _logger.error(f"Like not found - {elem}")
+      return False
+
+    if fill == '#FD286E':
+      _logger.error('Already starred')
+      return False
+
+    self._click_on('sc_heart', wtime=1)
+    return True
+
+  def _click_on(self, log_elem, index=0, wtime=2, expose=False):
+    """Click an logical element on smule page"""
+
+    if log_elem not in LOCATORS:
+      _logger.error(f"{log_elem} not defined in Locators")
+      return False
+    
+    elem = LOCATORS[log_elem]
+    if not self.sdriver.click(elem, wtime=wtime, index=index, move=True):
+      _logger.error(f"Error clicking {log_elem} => {elem}")
+      if not expose:
+        return False
+
+      if not self.sdriver.click(elem, index=index, move=true):
+        _logger.error(f"Error clicking {elem}")
+        return False
+
+    if wtime > 0:
+      self.refresh()
+    return True
+
+  def toggle_play(self, doplay=True, href=None):
+    """ Play or pause song"""
+    self.refresh()
+    limit = 5
+    paths = 0
+
+    _logger.debug(repr({"doplay": doplay}))
+    while limit > 0:
+      paths = self.sdriver \
+          .find_element(LOCATORS['sc_play_toggle'], index=-1)
+      pathsize = len(paths)
+      if pathsize > 0:
+        break
+
+      time.sleep(1)
+      limit -= 1
+    
+    toggling = True
+    if doplay and (pathsize == 2):
+      _logger.debug(f"Already playing [{pathsize}].  Do nothing [1]")
+      toggling = False
+    elif not doplay and (pathsize == 1):
+      _logger.debug(f"Already stopped [{pathsize}].  Do nothing [2]")
+      toggling = False
+    else:
+      _logger.debug(repr({"pathsize": pathsize}))
+    
+    return self._toggle_play(doplay=doplay, href=href) if toggling else 5
+
+  def _toggle_play(self, doplay=True, href=None):
+    _logger.debug(f"Think play = {doplay}")
+
+    play_locator = LOCATORS['sc_play_time']
+    self._click_on('sc_play_toggle', wtime=0)
+    if doplay:
+      if len(self.sdriver.find_element(play_locator, index=-1)) >= 3:
+        sleep_round = 0
+        while True:
+          remain = self._remain_time()
+          if remain and (remain > 0):
+            if href and (sleep_round > 5):
+              sdriver.navigate.refresh()
+            break
+          elif sleep_round > 60:
+            _logger.info('Wait too long')
+            if href:
+              self.refresh()
+            break
+          elif (msg := self.sdriver.find_element(LOCATORS['sc_oh_no']).text) == 'Oh, no!':
+            _logger.info(f"See Oh, no! message - [{msg}]")
+            if href:
+              self.refresh()
+          
+          _logger.debug(f"Waiting for time - {sleep_round}")
+          time.sleep(2)
+          sleep_round += 1
+          self.refresh()
+        
+      else:
+        _logger.error(f"Can't see time element.  Just pause and guess")
+        time.sleep(2)
+      
+      remain = self._remain_time()
+      if not remain:
+        remain = 300
+
+    else:
+      remain = 0
+    
+    return remain
+ 
+  def _remain_time(self):
+    """ Get remaining play time of current song."""
+    play_locator = LOCATORS['sc_play_time']
+    if len(self.sdriver.find_element(play_locator, index=-1)) < 3:
+      return nil
+
+    curtime   = self.sdriver.find_element(play_locator, index=1).text.split(':')
+    curtime_s = int(curtime[0])*60 + int(curtime[1])
+
+    endtime   = self.sdriver.find_element(play_locator, index=2).text.split(':')
+    endtime_s = int(endtime[0])*60 + int(endtime[1])
+
+    return (endtime_s - curtime_s)
+ 
 #
-#    sc_favorite_toggle: 'li.sc-iLIByi.rLGZk',
-#    sc_comment_text: 'div.sc-bPPhlf.bLuqb',
-#    sc_play_time: 'span.sc-kDDrLX.bnygEQ',
-#    sc_song_menu_text: 'span.sc-kDDrLX.XrXfW',
-#    sc_song_note: 'p.sc-iJkHyd.etjGnv',
-#    sc_oh_no: 'div.sc-gYMRRK.dJWJvi',
 #
-#    sc_finit: '.sc-tQuYZ.bnsezK',
-#    sc_followers: '.sc-btIRyd.kdDvya',
-#    sc_followings: '.sc-kDDrLX.bigqPT',
-#    sc_fentry: 'div.sc-knuRna.idgPUg',
-#
-#    sc_notification: 'div.sc-dvwKko.fircjK a',
-#  }.freeze
 #
 #  def speed_video(rate)
 #    Plog.debug("Set play rate to #{rate}")
@@ -34,31 +165,9 @@ class SmulePage(SelPage):
 #    end
 #  end
 #
-#  # Click an logical element on smule page
-#  def _click_on(log_elem, options = {})
-#    if (elem = LOCATORS[log_elem]).nil?
-#      Plog.error "#{log_elem} not defined in Locators"
-#      return false
-#    end
-#    index = options[:index] || 0
-#    delay = options[:delay] || 2
-#    unless clickit(elem, wait: delay, index: index, move: true)
-#      Plog.error "Error clicking #{log_elem} => #{elem}"
-#      return false unless options[:expose]
-#
-#      # Expose bug in sdriver - if I have to scroll, the 1st time element
-#      # access would still fail
-#      unless clickit(elem, index: index, move: true)
-#        Plog.error "Error clicking #{elem}"
-#        return false
-#      end
-#    end
-#    refresh if delay > 0
-#    true
-#  end
 #
 #  def toggle_song_favorite(fav: true)
-#    _click_on(:sc_song_menu, delay: 1)
+#    self._click_on(:sc_song_menu, delay: 1)
 #
 #    locator = LOCATORS[:sc_favorite_toggle]
 #    cval = (css("#{locator} svg path")[0] || {})[:fill]
@@ -129,7 +238,7 @@ class SmulePage(SelPage):
 #    # Nothing change - just return
 #    return true if osnote == newnote
 #
-#    _click_on(:sc_song_menu)
+#    self._click_on(:sc_song_menu)
 #
 #    locator = LOCATORS[:sc_song_menu_text]
 #    if page.css(locator).text !~ /Edit performance/
@@ -145,106 +254,9 @@ class SmulePage(SelPage):
 #    click_and_wait('input#recording-save')
 #  end
 #
-#  def like_song(href = nil)
-#    goto(href, 3) if href
-#    elem = LOCATORS[:sc_heart]
-#    raise "#{elem} not defined in Locators" unless elem
-#
-#    unless (fill = (css("#{elem} svg path")[0] || {})[:fill])
-#      Plog.error("Like not found - #{elem}")
-#      return false
-#    end
-#
-#    if fill == '#FD286E'
-#      Plog.error('Already starred')
-#      return false
-#    end
-#    _click_on(:sc_heart, delay: 1)
-#    true
-#  end
-#
-#  # Get remaining play time of current song.
-#  def _remain_time
-#    play_locator = LOCATORS[:sc_play_time]
-#    return nil if css(play_locator).size < 3
-#
-#    curtime   = css(play_locator)[1].text.split(':')
-#    curtime_s = curtime[0].to_i * 60 + curtime[1].to_i
-#
-#    endtime   = css(play_locator)[2].text.split(':')
-#    endtime_s = endtime[0].to_i * 60 + endtime[1].to_i
-#
-#    endtime_s - curtime_s
-#  end
-#
-#  def _toggle_play(doplay: true, href: nil)
-#    Plog.debug("Think play = #{doplay}")
-#
-#    play_locator = LOCATORS[:sc_play_time]
-#    _click_on(:sc_play_toggle, delay: 0)
-#    if doplay
-#      if css(play_locator).size >= 3
-#        sleep_round = 0
-#        while true
-#          remain = _remain_time
-#          if remain && (remain > 0)
-#            sdriver.navigate.refresh if href && (sleep_round > 5)
-#            break
-#          elsif sleep_round > 60
-#            Plog.info 'Wait too long'
-#            sdriver.navigate.refresh if href
-#            break
-#          elsif (msg = css(LOCATORS[:sc_oh_no]).text) == 'Oh, no!'
-#            Plog.info "See Oh, no! message - [#{msg}]"
-#            sdriver.navigate.refresh if href
-#          end
-#          Plog.debug("Waiting for time - #{sleep_round}")
-#          sleep 2
-#          sleep_round += 1
-#          refresh
-#        end
-#      else
-#        Plog.error("Can't see time element.  Just pause and guess")
-#        sleep 2
-#      end
-#      _remain_time || 300
-#    else
-#      remain = 0
-#    end
-#    remain
-#  end
-#
-#  # Play or pause song
-#  def toggle_play(doplay: true, href: nil)
-#    refresh
-#    limit = 5
-#    paths = nil
-#
-#    Plog.dump {{doplay: doplay}}
-#    while limit > 0
-#      paths = css(LOCATORS[:sc_play_toggle]).size
-#      break if paths > 0
-#
-#      #_click_on(:sc_play_time, delay: 1)
-#      sleep 1
-#      limit -= 1
-#    end
-#    toggling = true
-#    if doplay && paths == 2
-#      Plog.debug("Already playing [#{paths}].  Do nothing [1]")
-#      toggling = false
-#    elsif !doplay && paths == 1
-#      Plog.debug("Already stopped [#{paths}].  Do nothing [2]")
-#      toggling = false
-#    else
-#      Plog.dump {{paths: paths}}
-#    end
-#    toggling ? _toggle_play(doplay: doplay, href: href) : 5
-#  end
-#
 #  def comment_from_page
 #    set_size = css(LOCATORS[:sc_comment_open]).size
-#    _click_on(:sc_comment_open, index: set_size - 2, delay: 0.5)
+#    self._click_on(:sc_comment_open, index: set_size - 2, delay: 0.5)
 #    res = []
 #    css(LOCATORS[:sc_comment_text]).reverse.each do |acmt|
 #      comment = acmt.text.split
@@ -252,12 +264,12 @@ class SmulePage(SelPage):
 #      msg  = (comment[1..] || []).join(' ')
 #      res << [user, msg]
 #    end
-#    _click_on(:sc_comment_close, delay: 0)
+#    self._click_on(:sc_comment_close, delay: 0)
 #    res
 #  end
 #
 #  def autoplay_off
-#    _click_on(:sc_auto_play_off, expose: true)
+#    self._click_on(:sc_auto_play_off, expose: true)
 #  end
 #
 #  def _song_note
@@ -302,8 +314,8 @@ class SmulePage(SelPage):
 #  end
 #
 #  def collect_followers(user)
-#    goto("https://www.smule.com/#{user}")
-#    _click_on(:sc_finit, index: 1, delay: 0)
+#    self.goto("https://www.smule.com/#{user}")
+#    self._click_on(:sc_finit, index: 1, delay: 0)
 #
 #    sleep(0.5)
 #    followers  = _collect_fgroup(LOCATORS[:sc_followers], :followers)
@@ -314,7 +326,7 @@ class SmulePage(SelPage):
 #  end
 #
 #  def songs_from_notification
-#    goto('https://www.smule.com/user/notifications')
+#    self.goto('https://www.smule.com/user/notifications')
 #    selector = LOCATORS[:sc_notification]
 #    links    = css(selector).select {|r| r[:href] =~ /sing-recording/}
 #                  .map {|r| "https://www.smule.com#{r[:href]}" }

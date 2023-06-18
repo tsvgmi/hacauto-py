@@ -44,7 +44,7 @@ class Api:
     _logger.info(f"Getting favorites for {user}")
     result = Api.get_songs(f"https://www.smule.com/{user}/favorites/json",
         limit=500, days=365*10)
-    _logger.info("Collecting %d favorites from user %s", len(result), user)
+    _logger.info(f"Collecting {len(result)} favorites from user {user}")
     return result
 
   def get_songs(url, limit=100, days=365):
@@ -63,6 +63,7 @@ class Api:
           time.sleep(2)
           next
         
+        result = None
         try:
           result = JS.loads(output)
         except JS.JSONDecodeError:
@@ -94,11 +95,10 @@ class Api:
 
     return allset
 
-  def get_performances(user, limit=500, days=30):
-    _logger.info(f"Getting performances for #{user}")
-    result = Api.get_songs("https://www.smule.com/#{user}/performances/json",
+  def get_performances(user, limit=500, days=90):
+    result = Api.get_songs(f"https://www.smule.com/{user}/performances/json",
                            limit, days)
-    _logger.info(f"Collecting {len(result)} songs from user {user}")
+    _logger.info(f"Collecting {len(result)}/{limit} songs from user {user} in last {days} days")
     return result
 
 ##!/usr/bin/env ruby

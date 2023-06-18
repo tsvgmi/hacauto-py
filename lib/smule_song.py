@@ -59,7 +59,7 @@ class SmuleSong:
         _logger.info('No change in data')
         return False
     self.info.record_by = new_record
-    _logger.info(f"Changing {cur_record} to {new_record}")
+    _logger.debug(f"Changing {cur_record} to {new_record}")
     return True
 
   song_dir = "/mnt/d/SMULE"
@@ -108,40 +108,31 @@ from smule_model import *
 from sqlalchemy import create_engine, text, select, exists
 from sqlalchemy.orm import Session
 
-class DbConn:
-  def __init__(self, dbfile):
-    conn_str     = f"sqlite:///{dbfile}"
-    self.engine  = create_engine(conn_str)
+class SmuleDB:
+  def __init__(self, user, data_dir):
+    self.user    = user
+    self.engine  = create_engine(f"sqlite:///{dbfile}")
     self.conn    = self.engine.connect()
     self.session = Session(self.engine)
 
-  def select(self, query):
-    return self.conn.execute(text(query))
-
-  def execute(self, stmt):
-    return self.session.execute(stmt)
-
-  def commit(self):
-    return self.session.commit()
-
-class SmuleDB(DbConn):
-  def __init__(self, user, data_dir):
-    super().__init__(f"{data_dir}/smule.db")
-    self.user    = user
-    self.content = self.session.query(Performance) \
-        .where(text(f"record_by like '%{user}%'"))
-
-  def top_partners(self, limit, days=90):
-    odate = (DT.datetime.now() - DT.timedelta(days=days)).strftime('%Y-%m-%d')
+  def top_partners(self, limit, exclude=None, days=90):
+    odate   = (DT.datetime.now() - DT.timedelta(days=days)).strftime('%Y-%m-%d')
+    if exclude:
+      exclude = exclude.split(',')
+      filter = [f"record_by not like '%{u}%'" for u in exclude]
+      filter = " and ".join(filter)
+      filter = f"and ({filter})"
+    else:
+      filter = ''
     query = f"""
       select record_by, count(*) as count, sum(loves) as loves,
         sum(listens) as listens, sum(stars) as stars,
         sum(isfav)+sum(oldfav) as favs
       from performances where record_by != '{self.user}' and
-        created > '{odate}'
+        created > '{odate}' {filter}
       group by record_by order by listens desc
       """
-    _logger.debug(query)
+    _logger.info(query)
 
     rank   = {}
     filter = f",?{self.user},?"
