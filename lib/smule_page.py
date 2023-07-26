@@ -1,4 +1,5 @@
 import logging
+import datetime as DT
 
 from sel_page import SelPage
 
@@ -43,7 +44,7 @@ class SmulePage(SelPage):
       return False
 
     if fill == '#FD286E':
-      _logger.error('Already starred')
+      _logger.error('Already liked')
       return False
 
     self._click_on('sc_heart', wtime=1)
@@ -62,7 +63,7 @@ class SmulePage(SelPage):
       if not expose:
         return False
 
-      if not self.sdriver.click(elem, index=index, move=true):
+      if not self.sdriver.click(elem, index=index, move=True):
         _logger.error(f"Error clicking {elem}")
         return False
 
@@ -155,8 +156,64 @@ class SmulePage(SelPage):
 
     return (endtime_s - curtime_s)
  
-#
-#
+  def toggle_song_favorite(self, fav = True):
+    self._click_on('sc_song_menu', wtime = 1)
+
+    locator = LOCATORS['sc_favorite_toggle']
+
+    cval = self.sdriver.find_element(f"{locator} svg path").get_attribute('fill')
+    if not cval:
+      _logger.error(f"Like not found - {locator}")
+      return False
+
+    rcode = False
+    if fav and (cval == '#FFCE42'):
+      _logger.debug('Already fav, skip it')
+    elif (not fav) and (cval != '#FFCE42'):
+      _logger.info('Already not-fav, skip it')
+    else:
+      self.sdriver.click(locator, wtime=1)
+      rcode = True
+
+    self.sdriver.click('body', wtime=0)
+    return rcode
+
+  def _song_note(self):
+    locator = LOCATORS['sc_song_note']
+    elem = self.sdriver.find_element(locator)
+    if not elem:
+      _logger.error(f"{locator} not found (song note)")
+      return ''
+    return elem.text
+
+  def add_song_tag(self, tags, sinfo = None):
+    # Get the current note
+    oldnote = sinfo['message'] = self._song_note()
+    newnote = oldnote
+    for tag_t in tags:
+      tag = sinfo['created'].strftime(tag_t)
+      if tag not in oldnote:
+        newnote += f" {tag}"
+
+    # Nothing change - just return
+    if oldnote == newnote:
+      return True
+
+    self._click_on('sc_song_menu')
+
+    locator = LOCATORS['sc_song_menu_text']
+    if 'Edit performance' not in self.sdriver.find_element(locator, index=3).text:
+      self.sdriver.click('body', wtime=0)
+      return False
+
+    self.sdriver.click(locator, wtime=1, index=3)
+
+    self.sdriver.type('textarea#message', newnote)
+    sinfo['message'] = newnote
+    _logger.info(f"Setting note to: {newnote}")
+    self.sdriver.click('input#recording-save')
+    return True
+
 #
 #  def speed_video(rate)
 #    Plog.debug("Set play rate to #{rate}")
@@ -165,27 +222,6 @@ class SmulePage(SelPage):
 #    end
 #  end
 #
-#
-#  def toggle_song_favorite(fav: true)
-#    self._click_on(:sc_song_menu, delay: 1)
-#
-#    locator = LOCATORS[:sc_favorite_toggle]
-#    cval = (css("#{locator} svg path")[0] || {})[:fill]
-#    return false unless cval
-#
-#    if fav && cval == '#FFCE42'
-#      Plog.debug('Already fav, skip it')
-#      find_element(:css, 'body').click
-#      return false
-#    elsif !fav && cval != '#FFCE42'
-#      Plog.info('Already not-fav, skip it')
-#      find_element(:css, 'body').click
-#      return false
-#    end
-#    click_and_wait(locator, 1, 0)
-#    find_element(:css, 'body').click
-#    true
-#  end
 #
 #  def add_any_song_tag(user, sinfo = nil, _options = {})
 #    return unless sinfo
@@ -216,44 +252,6 @@ class SmulePage(SelPage):
 #    add_song_tag(tagset, sinfo)
 #  end
 #
-#  def add_song_tag(tags, sinfo = nil)
-#    # Get the current note
-#    snote = ''
-#    if sinfo && (snote = sinfo[:message]).nil?
-#      snote = sinfo[:message] = _song_note
-#    end
-#
-#    osnote  = snote
-#    newnote = snote
-#    tags.each do |tag_t|
-#      if sinfo
-#        tag = sinfo[:created].strftime(tag_t)
-#        newnote += " #{tag}" if snote !~ /#{tag}/
-#      else
-#        tag = Time.now.strftime(tag_t)
-#        newnote += " #{tag}"
-#      end
-#    end
-#
-#    # Nothing change - just return
-#    return true if osnote == newnote
-#
-#    self._click_on(:sc_song_menu)
-#
-#    locator = LOCATORS[:sc_song_menu_text]
-#    if page.css(locator).text !~ /Edit performance/
-#      find_element(:xpath, '//html').click
-#      return false
-#    end
-#
-#    click_and_wait(locator, 1, 3)
-#
-#    type('textarea#message', newnote, append: false) # Enter tag
-#    sinfo[:message] = newnote if sinfo
-#    Plog.info("Setting note to: #{newnote}")
-#    click_and_wait('input#recording-save')
-#  end
-#
 #  def comment_from_page
 #    set_size = css(LOCATORS[:sc_comment_open]).size
 #    self._click_on(:sc_comment_open, index: set_size - 2, delay: 0.5)
@@ -270,16 +268,6 @@ class SmulePage(SelPage):
 #
 #  def autoplay_off
 #    self._click_on(:sc_auto_play_off, expose: true)
-#  end
-#
-#  def _song_note
-#    locator = LOCATORS[:sc_song_note]
-#    if css(locator).empty?
-#      Plog.error("#{locator} not found (song note)")
-#      ''
-#    else
-#      css(locator)[0].text
-#    end
 #  end
 #
 #  def _collect_fgroup(tab_css, gname)

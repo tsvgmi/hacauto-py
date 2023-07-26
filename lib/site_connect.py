@@ -7,12 +7,11 @@ from sdriver import SDriver
 _logger = logging.getLogger(__name__)
 
 class SiteConnect:
-  def __init__(self, site, options = {}):
+  def __init__(self, site):
     _logger.info(f"Connect to site: {site}")
     with open('etc/access.yml') as fid:
       config = yaml.safe_load(fid)[site]
 
-    config.update(options)
     self.driver = SiteConnect.connect_smule(config)
 
   def close(self):

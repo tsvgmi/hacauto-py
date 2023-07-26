@@ -9,18 +9,14 @@ from smule_model  import *
 _logger = logging.getLogger(__name__)
 
 class Scanner:
-  def __init__(self, user, db, options = {}):
-    self.user    = user
-    self.db      = db
-    self.options = options
-
-    self.connector = SiteConnect('smule', self.options)
+  def __init__(self, user, db):
+    self.user      = user
+    self.db        = db
+    self.connector = SiteConnect('smule')
     self.spage     = SmulePage(self.connector.driver)
-
     time.sleep(1)
-    _logger.debug(options)
     
-  def like_set(self, song_set, count):
+  def like_set(self, song_set, count, exclude=None, pause=0):
     stars = []
     for singer, slist in song_set.items():
       scount = count
@@ -36,14 +32,13 @@ class Scanner:
         if self.db.conn.execute(text(sql)).first():
           continue
 
-        if (exclude := self.options['exclude']):
-          if exclude in sinfo['record_by']:
-            continue
+        if exclude and (exclude in sinfo['record_by']):
+          continue
 
         if self.spage.like_song(sinfo['href']):
           _logger.info(f"Marking {sinfo['stitle']} ({sinfo['record_by']})")
           stars.append(sinfo)
-          if (pause := self.options['pause']):
+          if pause > 0:
             time.sleep(1)
             self.spage.toggle_play(doplay=True)
             time.sleep(pause)
@@ -56,25 +51,21 @@ class Scanner:
         if scount <= 0:
           break
     return stars
-#
-#  def set_unfavs(songs, marking: true)
-#    songs.each do |asong|
-#      @spage.goto(asong[:href])
-#      @spage.toggle_song_favorite(fav: false)
-#      @spage.add_song_tag(['#thvfavs_%y'], asong) if marking
-#      Plog.dump_info(msg: 'Unfav', stitle: asong[:stitle],
-#                     record_by: asong[:record_by])
-#    end
-#  end
-#
-#  def unfavs_old(count, result)
-#    if @options[:mine_only]
-#      result = result.select do |sinfo|
-#        sinfo[:record_by].start_with?(@user)
-#      end
-#    end
-#    new_size = [result.size - count, 0].max
-#    set_unfavs(result[new_size..])
-#    result[0..new_size - 1]
-#  end
-#end
+
+  def unfavs_old(self, songs, count, mine_only=False):
+    if mine_only:
+      songs = [song for song in songs if song['record_by'].startswith(self.user)]
+
+    new_size = max(len(songs) - count, 0)
+
+    # Mark the end of list
+    for asong in songs[new_size:-1]:
+      self.spage.goto(asong['href'])
+      self.spage.toggle_song_favorite(fav = False)
+      if marking:
+        self.spage.add_song_tag(['#thvfavs_%y'], asong)
+      _logger.info(repr({"msg": 'Unfav', "stitle": asong['stitle'],
+                         "record_by": asong['record_by']}))
+
+    return songs[0:new_size]
+

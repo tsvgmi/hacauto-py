@@ -41,9 +41,6 @@ class SDriver:
     if not append:
       elem.clear()
     elem.send_keys(data)
-#      Plog.error(e)
-#      sleep(3)
-#    end
 
   def goto(self, path):
     if not path.startswith('http'):

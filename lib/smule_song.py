@@ -1,3 +1,5 @@
+#!/bin/env python
+
 import datetime as DT
 import logging
 import os
@@ -6,6 +8,7 @@ import tempfile as TF
 import re
 import click
 import time
+import yaml
 
 from core import get_page_curl
 
@@ -21,14 +24,17 @@ class SmuleSong:
       self.info.created = DT.datetime.now()
 
   def update_mp4tag(self):
-    if os.path.isfile(self.location):
-      href    = f"https://www.smule.com{self.info.href}"
-      date    = self.info.created.strftime('%Y-%m-%d')
-      album   = self.info.created.strftime('Smule-%Y.%m')
-      artist  = self.info.record_by.replace(',', ', ')
-      release = self.info.created.isoformat()
-      comment = f"{date} - {href}"
-      title   = self.info.title
+    if not os.path.isfile(self.location):
+      _logger.error(f"File {self.location} does not exist")
+      return
+
+    href    = f"https://www.smule.com{self.info.href}"
+    date    = self.info.created.strftime('%Y-%m-%d')
+    album   = self.info.created.strftime('Smule-%Y.%m')
+    artist  = self.info.record_by.replace(',', ', ')
+    release = self.info.created.isoformat()
+    comment = f"{date} - {href}"
+    title   = self.info.title
 
     command = f"atomicparsley {self.location}"
     lcfile  = 'logs/' + os.path.basename(self.info.avatar)
@@ -67,22 +73,15 @@ class SmuleSong:
   # Account to move songs to.  i.e. user close old account and open
   # new one and we want to associate with new account
   # Or user have multiple accounts, but we want to collapse to one
-  ALTERNATE = {
-    'Annygermany':      'Dang_Anh_Anh',
-    'ChiHoang55':       'ChiMHoang',
-    'CucNguyenthanhho': 'HongCuc85',
-    'Eddy2020_':        'Mina_________',
-    'MaiLoan06':        'MLOAN06',
-    '_Huong':           '__HUONG',
-    '_MaiLan_':         '__MaiLan__',
-    '_NOEXIST_':        'Dang_Anh_Anh',
-    '__MinaTrinh__':    'Mina_________',
-    'HieuLe2014':       'CL_281',
-    'Thanhnhi2020':     'ThanhNhi___',
-  }
+  ALTERNATE = None
 
   def record_by_map(record_by):
     result = []
+
+    if ALTERNATE is None:
+      with open('etc/alias.yml') as fid:
+        ALTERNATE = yaml.safe_load(fid)
+
     for ri in record_by:
       result.append(SmuleSong.ALTERNATE[ri] \
           if ri in SmuleSong.ALTERNATE else ri)
@@ -105,15 +104,16 @@ class SmuleSong:
 ######################################################################
 from smule_model import *
 
-from sqlalchemy import create_engine, text, select, exists
+from sqlalchemy import create_engine, text, select, exists, MetaData
 from sqlalchemy.orm import Session
 
 class SmuleDB:
   def __init__(self, user, data_dir):
     self.user    = user
-    self.engine  = create_engine(f"sqlite:///{dbfile}")
+    self.engine  = create_engine(f"sqlite:///{data_dir}/smule.db")
     self.conn    = self.engine.connect()
     self.session = Session(self.engine)
+    self.tables  = {}
 
   def top_partners(self, limit, exclude=None, days=90):
     odate   = (DT.datetime.now() - DT.timedelta(days=days)).strftime('%Y-%m-%d')

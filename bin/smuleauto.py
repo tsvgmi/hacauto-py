@@ -74,7 +74,7 @@ def fix_media_missing(obj, user):
 
   missing_sids = list(set(db_sids) - set(fi_sids))
   print("\n".join(missing_sids))
-  logging.info("%d records, %d files missed", len(db_sids), len(missing_sids))
+  _logger.info("%d records, %d files missed", len(db_sids), len(missing_sids))
 
 @cli.command()
 @click.pass_obj
@@ -88,7 +88,7 @@ def fix_media_error(obj, **options):
   with click.progressbar(sfiles, label='Check tags') as bar:
     for dfile in bar:
       if SmuleSong.has_error(dfile):
-        logging.error("Error detected in %s", dfile)
+        _logger.error("Error detected in %s", dfile)
         ccount += 1
   print(ccount, "files detected")
 
@@ -115,7 +115,7 @@ def fix_mp3_tags(obj, user, filter):
 @cli.command()
 @click.argument('user')
 @click.argument('filters', nargs=-1)
-@click.option('-c', '--with-collabs', is_flag=True, help='Collect my joiners')
+@click.option('--with-collabs', is_flag=True, help='Collect my joiners')
 @click.pass_obj
 def collect_songs(obj, user, filters, **options):
   """Collect songs joined by USER"""
@@ -126,13 +126,14 @@ def collect_songs(obj, user, filters, **options):
   for key, value in obj.items():
     print('C', key, ':', value)
 
+from sqlalchemy.orm import Session
+
 @cli.command()
-@click.argument('user')
 @click.argument('old_name')
 @click.argument('new_name')
 @click.option('--audit', is_flag=True, help='Audit change only')
 @click.pass_obj
-def move_singer(obj, user, old_name, new_name, **options):
+def move_singer(obj, old_name, new_name, **options):
   """Rename a singer from old name to new name.
 
   Singer often changes display name.  This is tracked in DB, so we need to run
@@ -143,21 +144,26 @@ def move_singer(obj, user, old_name, new_name, **options):
   else:
     name_chk = old_name
   
-  stmt = select(Performance) \
-            .where(text(f'record_by like "%{user}%"')) \
-            .where(text(f'record_by like "%{name_chk}%"'))
-  db      = SmuleDB(user, obj['data_dir'])
-  result  = db.conn.execute(stmt)
+  db      = SmuleDB('', obj['data_dir'])
+  stmt    = select(Performance).where(text(f'record_by like "%{name_chk}%"'))
   isaudit = options['audit']
-  with click.progressbar(result.all(), label='Rename singer') as bar:
-    for row in bar:
-        print(row)
-        asong = SmuleSong(row[0])
-        if isaudit:
+  with Session(db.engine) as session:
+    result = session.execute(stmt)
+    count  = 0
+    with click.progressbar(result.all(), label='Rename singer') as bar:
+      for row in bar:
+          doupdate = False
+          asong    = SmuleSong(row[0])
+          if isaudit:
+            doupdate = True
+          elif asong.move_song(old_name, new_name):
+            doupdate = True
+          if not doupdate:
+            continue
           asong.update_mp4tag()
-        elif asong.move_song(old_name, new_name):
-          asong.update_mp4tag()
-  db.session.commit()
+          session.commit()
+          count += 1
+    print(f"{count} records updated")
 
 @cli.command()
 @click.argument('user')
@@ -232,7 +238,7 @@ def clean_lyrics(obj, **options):
 def scan_favs(obj, user):
   """Scan list of favorites for USER"""
   favset  = Api.get_favs(user)
-  SmuleDB(user, data_dir="./data").add_favorites(favset)
+  SmuleDB(user, obj['data_dir']).add_favorites(favset)
 
 @cli.command()
 @click.pass_obj
@@ -244,26 +250,27 @@ def scan_favs(obj, user):
 @click.option('--exclude', type=click.STRING, help='List of users to exclude')
 @click.option('--pause', default=5, help='Time to wait between songs')
 def like_singers(obj, user, count, singers, **options):
-  db   = SmuleDB(user, data_dir="./data")
+  """Liking some songs on listed singers"""
+
+  db   = SmuleDB(user, obj['data_dir'])
   days = options['days']
   if (top := options['top']):
-    logging.info(repr({"top":top}))
+    _logger.info(repr({"top":top}))
     singers  = list(singers) + \
         db.top_partners(top, exclude=options['exclude'], days=days)
 
-  logging.debug(repr({"count": len(singers), "singers": singers}))
+  _logger.debug(repr({"count": len(singers), "singers": singers}))
   
   allsets = {}
   for asinger in singers:
     perfset = Api.get_performances(asinger, limit=count, days=days)
     allsets[asinger] = perfset
 
-  scanner = Scanner(user, db, options)
-  starred = scanner.like_set(allsets, count)
-
+  starred  = Scanner(user, db).like_set(allsets, count,
+      exclude=options['exclude'], pause=options['pause'])
   counters = {}
-  for sinfo in starred:
-    for singer in sinfo['record_by'].split(','):
+  for song in starred:
+    for singer in song['record_by'].split(','):
       counters[singer] = counters[singer]+1 if singer in counters else 1
     
   scounters = sorted(counters.items(), key=lambda x:x[1])
@@ -289,8 +296,82 @@ def set_vc_args(obj, args):
   with open(cf_file, 'w') as fod:
     print(JS.dumps(config, indent=4), file=fod)
 
+import datetime as DT
+from dateutil import parser
+
+@cli.command()
+@click.pass_obj
+@click.argument('user')
+@click.argument('mode', default='following')
+def show_follows(obj, user, mode):
+  """Show the activities for following list"""
+
+  conn   = SmuleDB(user, obj['data_dir']).conn
+  sql    = f"select name from singers where {mode} = 1"
+  folset = {r[0] for r in conn.execute(sql).all()}
+
+  sql = f"""
+    select record_by, count(*) as count, max(created) as created,
+      sum(isfav+oldfav) as favs from performances
+      where record_by like '%{user}%'
+      group by record_by order by created desc
+      """
+  counters = {}
+  for r in conn.execute(sql).all():
+    record_by = [i for i in r[0].split(',') if i in folset]
+    for singer in record_by:
+      favs = r[3] if r[3] else 0
+      if singer not in counters:
+        date = DT.datetime.now() - parser.parse(r[2])
+        counters[singer] = {"count": r[1], "favs": favs, "days": date.days}
+      else:
+        counters[singer]['count'] += r[1]
+        counters[singer]['favs']  += favs
+
+  table = [[singer, r['count'], r['favs'], r['days']] \
+      for singer, r in counters.items()]
+  print(tabulate.tabulate(table, headers=['Singer', 'Songs', 'Favs', 'Days' ]))
+
+@cli.command()
+@click.pass_obj
+@click.argument('user')
+@click.argument('count', default=10)
+@click.option('--mine-only', is_flag=True, help='Unfavs from my joins only')
+def unfavs_old(obj, user, count = 10, **options):
+  """Unfavs oldest favs to keep list under 500 and leave space for adding
+     new entries"""
+  
+  db     = SmuleDB(user, obj['data_dir'])
+  favset = Api.get_favs(user)
+  result = Scanner(user, db) \
+      .unfavs_old(favset, count, mine_only=options['mine_only'])
+  db.add_new_songs(result, isfav = True)
+
+@cli.command()
+@click.pass_obj
+def check_joiners(obj):
+  """Check for all names of joiners (when they change)"""
+  db_conn = SmuleDB('', obj['data_dir']).conn
+  sql = """
+    select record_by, record_by_ids, count(*) from performances group by record_by_ids
+      order by created"""
+  umap  = {}
+  for r in db_conn.execute(text(sql)).all():
+    if not r[0] or not r[1]:
+      continue
+    record_by     = r[0].split(',')
+    record_by_ids = r[1].split(',')
+    for singer, rid in zip(record_by, record_by_ids):
+      if rid not in umap:
+        umap[rid] = set()
+      umap[rid].add(singer)
+  umap = [(rid, singers) for rid, singers in umap.items() if len(singers) > 1]
+  print(tabulate.tabulate(([rid, list(singers)[1:], list(singers)[0]] \
+      for rid, singers in umap), headers=['SID', 'Earlier', 'Latest']))
+
 ################################################################################
 if __name__ == '__main__':
+  _logger = logging.getLogger(__name__)
   logging.basicConfig(level=logging.INFO,
           format='%(levelname)3.3s %(asctime)s %(module)s:%(lineno)03d %(message)s',
           datefmt='%m/%d/%Y %H:%M:%S')
@@ -299,61 +380,6 @@ if __name__ == '__main__':
 
 #module SmuleAuto
 #  class Main < Thor
-#    include ThorAddition
-#
-#    desc 'db SUBCOMMAND ...', 'db support commands'
-#    subcommand 'db', DbCommand
-#
-#    desc 'fix SUBCOMMAND ...', 'fix support commands'
-#    subcommand 'fix', FixCommand
-#
-#    no_commands do
-#      def _tdir_check
-#        if (sdir = options[:song_dir]).nil?
-#          raise "Target dir #{sdir} not accessible to download music to"
-#        end
-#
-#        SmuleSong.song_dir = sdir
-#      end
-#
-#      def _collect_songs(user, coptions = nil)
-#        coptions ||= options
-#        limit   = coptions[:limit] || 100
-#        days    = coptions[:days]  || 7
-#        sapi    = Api.new(options)
-#        perfset = sapi.get_performances(user, limit: limit, days: days)
-#        unless coptions[:nodb]
-#          db = SmuleDB.instance(user)
-#          db.add_new_songs(perfset, isfav: false)
-#        end
-#        perfset
-#      end
-#
-#      def _set_search_filter(user, woptions, filter = nil)
-#        wset = Performance.where(Sequel.lit('performances.record_by like ?',
-#                                            "%#{user}%"))
-#                          .order(:created)
-#                          .join_table(:left, :song_infos, song_info_url: :song_info_url)
-#        wset = wset.where(Sequel.lit('isfav = 1 or oldfav = 1')) if woptions[:favs]
-#        unless (value = woptions[:record]).nil?
-#          wset = wset.where(Sequel.lit('performances.record_by like ?', "%#{value}%"))
-#        end
-#        unless (value = woptions[:tags]).nil?
-#          wset = wset.where(Sequel.lit('tags like ? or author like ? or singer like ?',
-#                                       "%#{value}%", "%#{value}%", "%#{value}%"))
-#        end
-#        unless (value = woptions[:title]).nil?
-#          wset = wset.where(Sequel.lit('performances.stitle like ?', "%#{value}%"))
-#        end
-#        wset = wset.where(Sequel.lit(filter)) if filter && !filter.empty?
-#        if woptions[:with_comment]
-#          wset = wset.join_table(:inner, :comments, Sequel.lit('performances.sid = comments.sid'))
-#        end
-#        Plog.dump(wset: wset)
-#        wset
-#      end
-#    end
-#
 #    class_option :browser,  type: :string, default: 'firefox',
 #                            desc: 'Browser to use (firefox|chrome)'
 #    class_option :data_dir, type: :string, default: './data',
@@ -372,81 +398,6 @@ if __name__ == '__main__':
 #    class_option :song_dir, type: :string, default: '/mnt/d/SMULE',
 #                            desc: 'Data directory to keep songs (m4a)'
 #    class_option :verbose,  type: :boolean
-#
-#    desc 'collect_songs user', 'Collect all songs and collabs of user'
-#    option :with_collabs, type: :boolean
-#    def collect_songs(user)
-#      cli_wrap do
-#        _tdir_check
-#        db         = SmuleDB.instance(user)
-#        newsongs   = _collect_songs(user)
-#        addc, repc = db.add_new_songs(newsongs, isfav: false)
-#        Plog.info("My joins: #{addc.size} added, #{repc.size} replaced")
-#        if options[:with_collabs]
-#          newsongs = SmuleSong.collect_collabs(user, options[:days])
-#          addc, repc = db.add_new_songs(newsongs, isfav: false)
-#          Plog.info("Other joins: #{addc.size} added, #{repc.size} replaced")
-#        end
-#        true
-#      end
-#    end
-#
-#    desc 'check_collabs singer ...', 'check_collabs'
-#    option :top,      type: :numeric
-#    option :lookback, type: :numeric
-#    def check_collabs(user, *singers)
-#      cli_wrap do
-#        content = SmuleDB.instance(user)
-#        if options[:top]
-#          limit = options[:top] || 10
-#          singers.concat(content.top_partners(limit, days: 90).map { |r| r[0] })
-#        end
-#
-#        collabs = []
-#        singers.each do |singer|
-#          perfs = _collect_songs(singer, nodb: true, days: 8)
-#          ucollabs = perfs.select { |r| r[:href] =~ /ensembles$/ }
-#          collabs.concat(ucollabs)
-#        end
-#        collabs = collabs.reject do |r|
-#          record_by = "#{r[:record_by]},#{user}"
-#          Performance.where(record_by: record_by, stitle: r[:stitle]).count > 0
-#        end
-#        collabs = collabs.map { |r| [r[:record_by], r[:title], r[:created]] }
-#        print_table(collabs)
-#        true
-#      end
-#    end
-#
-#    desc 'scan_favs user', 'Scan list of favorites for user'
-#    def scan_favs(user)
-#      cli_wrap do
-#        favset  = Api.new.get_favs(user)
-#        db      = SmuleDB.instance(user)
-#        db.add_new_songs(favset, isfav: true)
-#        true
-#      end
-#    end
-#
-#    desc 'unfavs_old user [count=10]', 'Remove earliest songs of favs'
-#    long_desc <<~LONGDESC
-#      Smule has limit of 500 favs.  So once in a while we need to remove
-#      it to enable adding more.  The removed one will be tagged with #thvfavs
-#      if possible
-#    LONGDESC
-#    option :mine_only, type: :boolean
-#    option :verbose,   type: :boolean
-#    def unfavs_old(user, count = 10)
-#      cli_wrap do
-#        _tdir_check
-#        db       = SmuleDB.instance(user)
-#        favset   = Api.new.get_favs(user)
-#        woptions = writable_options
-#        result   = Scanner.new(user, woptions).unfavs_old(count.to_i, favset)
-#        db.add_new_songs(result, isfav: true)
-#        true
-#      end
-#    end
 #
 #    no_commands do
 #      def _get_users(users, agroup)
@@ -472,29 +423,6 @@ if __name__ == '__main__':
 #        end
 #        Plog.dump_info(agroup: agroup, size: result.size)
 #        result
-#      end
-#    end
-#
-#    desc 'check_joiners(user)', 'check_joiners'
-#    def check_joiners(user)
-#      cli_wrap do
-#        db    = SmuleDB.instance(user)
-#        umap  = {}
-#        db.content.exclude(record_by_ids: nil).group(:record_by)
-#          .select(:record_by, :record_by_ids, :created).order(:created)
-#          .each do |r|
-#          record_by     = r[:record_by].split(',')
-#          record_by_ids = r[:record_by_ids].split(',')
-#          record_by_ids.each_with_index do |uid, index|
-#            umap[uid] ||= []
-#            umap[uid] << record_by[index]
-#          end
-#        end
-#        umap.each_key do |uid|
-#          umap[uid] = umap[uid].uniq
-#          Plog.info "User #{uid} has names: #{umap[uid].inspect}" if umap[uid].size > 1
-#        end
-#        true
 #      end
 #    end
 #
